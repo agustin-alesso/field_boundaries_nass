@@ -1,0 +1,129 @@
+---
+title: "Extracting field boundaries from NASS CropSpace CDL data"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{css}
+p {
+  font-size: 13pt;
+}
+```
+
+This tutorial shows how to extract field boundaries from CropSpace CDL data available at NASS. This procedure involves several steps:
+
+1. Fecthing raster data of crop coverage from NASS API.
+2. Selecting crops of interest
+3. 
+
+## Step 1
+
+For this example we are going to use the data from Champaign County (IL) year 2018. According to the Federal Information Processing System (FIPS), the code for the state is `17` and for the county `019`. Then, the full code is: `17019`.
+
+```{r}
+library(raster)
+FIPS <- 17019
+year <- 2018
+
+base_url <- "https://nassgeodata.gmu.edu/webservice/nass_data_cache/byfips/CDL"
+req_url <- paste0(base_url, "_", year, "_", FIPS, ".tif")
+tmp <- raster(req_url)
+
+library(tmap)
+values(tmp) == 0 <- NA
+tm_shape(tmp) +
+  tm_raster("CDL_2018_17019.tif", showNA = F)
+
+```
+library(raster)
+library(dplyr)
+library(foreign)
+library(sf)
+library(ggplot2)
+library(nngeo)
+```
+
+##
+
+# Download data
+cdl_rst <- raster("CDL_2019_17019.tif")
+cdl_vat <- read.dbf("CDL_2019_17019.tif.vat.dbf")
+
+crp_rst <- raster(xmn=640000, xmx=650000, ymn=1899000, ymx=1910000,
+                  res = 900, crs = crs(cdl_rst))
+
+cdl_rst2 <- crop(cdl_rst, crp_rst)
+
+# Mask values
+cdl_msk <- cdl_rst2
+cdl_msk[cdl_msk != 1] <- NA 
+cdl_rst2 <- mask(cdl_rst2, mask = cdl_msk)
+
+# Detect boundaries
+cdl_bnd <- boundaries(cdl_rst2, classes = T, type = "inner", asNA = T)
+plot(cdl_bnd)
+
+# Mask out boundaries
+cdl_rst3 <- mask(cdl_rst2, mask = cdl_bnd, inverse = T)
+plot(cdl_rst3)
+
+# Detect clumps
+system.time(
+  cdl_clmp <- clump(cdl_rst3, directions = 4, gaps = F)
+)
+plot(cdl_clmp)
+
+# Vectorize those clumps
+system.time(
+  cdl_vct <- rasterToPolygons(cdl_clmp, dissolve = T)
+)
+plot(cdl_vct)
+
+# convert to spatial feature and remove holes
+cdl_vct <- st_as_sf(cdl_vct)
+cdl_vct <- st_remove_holes(cdl_vct)
+plot(cdl_vct)
+
+# Remove small fields
+cdl_vct2 <- mutate(cdl_vct, area = st_area(cdl_vct)) %>% 
+  filter(area > as_units(100000, "m^2"))
+
+# Visualize final product
+ggplot(cdl_vct2, aes(fill = factor(clumps))) +
+  geom_sf() +
+  theme(legend.position = "none")
+
+# Write data
+write_sf(cdl_vct, "cdl_tmp.gpkg")
+
+st_area(tmp2)
+
+tmp2 <- filter(tmp2, st_area(.))
+st_area(tmp2)
+
+cld_rst@data <- dplyr::left_join(cdl_rst@data, cdl_var, by = c("CDL_2019_17019" = "VALUE")) %>% 
+  dplyr::select(CLASS)
+
+plot(cdl_rst)
+corn ?mask
+tmp <- rasterToPolygons(cdl_rst, fun = function(x) {x == 1}, dissolve = T)
+plot(tmp)
+
+tmp <- mask(cdl_rst, mask = 1)
+?mask
+
+cdl_vat$VALUE[cdl_vat$CLASS_NAME == "Corn"]
+cdl_vat$CLASS_NAME
+
+raster
+str(cdl_rst["CDL_2019_17019"])
+str(cdl_rst)
+tmp <- as.data.frame(cdl_rst$CDL_2019_17019)
+table(tmp$CDL_2019_17019)
+
+
+tmp <- asclass(tmp)
+View(cdl_vat)
+?raster
+?clusterR()
