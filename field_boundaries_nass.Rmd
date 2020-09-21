@@ -14,116 +14,174 @@ p {
 This tutorial shows how to extract field boundaries from CropSpace CDL data available at NASS. This procedure involves several steps:
 
 1. Fecthing raster data of crop coverage from NASS API.
-2. Selecting crops of interest
-3. 
+2. Selecting crops of interest and masking other crops
+3. Detecting boundaries and mask them out
+4. Detecting cumps 
+5. Vectorize clumps
+6. Remove polygons by area
 
 ## Step 1
 
 For this example we are going to use the data from Champaign County (IL) year 2018. According to the Federal Information Processing System (FIPS), the code for the state is `17` and for the county `019`. Then, the full code is: `17019`.
 
 ```{r}
-library(raster)
 FIPS <- 17019
 year <- 2018
-
 base_url <- "https://nassgeodata.gmu.edu/webservice/nass_data_cache/byfips/CDL"
 req_url <- paste0(base_url, "_", year, "_", FIPS, ".tif")
-tmp <- raster(req_url)
-
-library(tmap)
-values(tmp) == 0 <- NA
-tm_shape(tmp) +
-  tm_raster("CDL_2018_17019.tif", showNA = F)
-
+req_rul
 ```
+
+
+Once we have the request url we can download the `tif` image into R using `raster::raster()`.
+
+```{r}
 library(raster)
-library(dplyr)
-library(foreign)
-library(sf)
-library(ggplot2)
-library(nngeo)
+cdl_rst <- raster(req_url)
+cdl_rst
 ```
 
-##
+For visualizing the results we can use the `tmap` package
 
-# Download data
-cdl_rst <- raster("CDL_2019_17019.tif")
-cdl_vat <- read.dbf("CDL_2019_17019.tif.vat.dbf")
+```{r}
+library(tmap)
+tm_shape(cdl_rst) +
+  tm_raster("CDL_2018_17019.tif", drop.levels = T, showNA = F, legend.show = F)
+```
 
+
+```{r, include = F, eval =F}
 crp_rst <- raster(xmn=640000, xmx=650000, ymn=1899000, ymx=1910000,
                   res = 900, crs = crs(cdl_rst))
 
 cdl_rst2 <- crop(cdl_rst, crp_rst)
+```
 
-# Mask values
-cdl_msk <- cdl_rst2
-cdl_msk[cdl_msk != 1] <- NA 
-cdl_rst2 <- mask(cdl_rst2, mask = cdl_msk)
 
+Based on the plot above, the most common category are green and yellow. To find out which crop are they we need the values attribute table (VAT) info which is stored in the `generic_cdl_attributes.tif.var.dbf.zip`.
+
+```{r}
+vat_url <- "https://www.nass.usda.gov/Research_and_Science/Cropland/docs/generic_cdl_attributes.tif.vat.dbf.zip"
+tmp_fn <- tempfile()
+download.file(vat_url, destfile = tmp_fn)
+file.exists(tmp_fn)
+```
+
+As it is a ZIP file we can chechk its content using `unzip()` with `list = T`.
+
+```{r}
+unzip(zipfile = tmp_fn, list = T)
+```
+
+To read the information we need to extract the zipfile in a temporary directory and then read the dbf database `ArcGIS10.3.1_2019_30m_cdls.img.vat.dbf`.
+
+```{r}
+# Extract the files
+tmp_dir <- tempdir()
+unzip(zipfile = tmp_fn, files = "ESRI_attribute_files/ArcGIS10.3.1_2019_30m_cdls.img.vat.dbf", 
+      exdir = tmp_dir)
+
+# Read
+library(foreign)
+cdl_vat <- read.dbf(paste0(tmp_dir, "/ESRI_attribute_files/ArcGIS10.3.1_2019_30m_cdls.img.vat.dbf"))
+head(cdl_vat, n = 15)
+```
+
+## Step 2
+
+To see what are the most common values we need to tabulate the values observed in the CDL data raster and join those values with their category names
+
+```{r}
+library(dplyr)
+tbl <- data.frame(table(values(cdl_rst), dnn = "VALUE"), stringsAsFactors = F)
+cdl_vat$VALUE <- factor(cdl_vat$VALUE)
+tbl <- left_join(tbl, cdl_vat, by = "VALUE") %>% 
+  arrange(desc(Freq))
+tbl
+```
+
+We cab see that the most common crops within Champaign County are `Corn` and `Soybeans`. We are going to use this information for masking out those areas which are not of interest.
+
+```{r}
+# Create mask
+cdl_msk <- cdl_rst
+cdl_msk[!cdl_msk %in% c(1, 5)] <- NA 
+cdl_rst <- mask(cdl_rst, mask = cdl_msk)
+tm_shape(cdl_rst) +
+  tm_raster("CDL_2018_17019", drop.levels = T, showNA = F, legend.show = F)
+```
+## Step 3
+
+We have identified all the agricultural fields planted with corn and soybeans. Next step is to detect boundaries.
+
+
+```{r}
 # Detect boundaries
-cdl_bnd <- boundaries(cdl_rst2, classes = T, type = "inner", asNA = T)
-plot(cdl_bnd)
+cdl_bnd <- boundaries(cdl_rst, classes = T, type = "inner", asNA = T)
+tm_shape(cdl_bnd) +
+  tm_raster("layer", drop.levels = T, showNA = F, legend.show = F)
+```
 
+In the map above, colored pixels represents arreas considered borders. We can use this information to derive a inverse mask
+
+```{r}
 # Mask out boundaries
-cdl_rst3 <- mask(cdl_rst2, mask = cdl_bnd, inverse = T)
-plot(cdl_rst3)
+cdl_rst <- mask(cdl_rst, mask = cdl_bnd, inverse = T)
+tm_shape(cdl_rst) +
+  tm_raster("CDL_2018_17019", drop.levels = T, showNA = F, legend.show = F)
+```
+## Detect clumps
 
-# Detect clumps
+Having the fields identified and masked them out from non-interest areas and boundaries, we can proceed to detect clumps which area sets of neighbouring pixeles.
+
+```{r}
 system.time(
-  cdl_clmp <- clump(cdl_rst3, directions = 4, gaps = F)
+  cdl_clmp <- clump(cdl_rst, directions = 4, gaps = F)
 )
-plot(cdl_clmp)
+tm_shape(cdl_clmp) +
+  tm_raster("clumps", drop.levels = T, showNA = F, legend.show = F)
+```
+
+These clumps represents groups of pixels which can be considered as a independent field.
+
+## Vectorized clumps
+
+Using the previous map we can turn the raster dataset into multipolygon data.
+
+```{r}
+beginCluster(10)
 
 # Vectorize those clumps
 system.time(
   cdl_vct <- rasterToPolygons(cdl_clmp, dissolve = T)
 )
-plot(cdl_vct)
+tm_shape(cdl_clmp) +
+  tm_polygons("clumps", drop.levels = T, showNA = F, legend.show = F)
+```
 
+## Refine map
+
+```{r}
 # convert to spatial feature and remove holes
 cdl_vct <- st_as_sf(cdl_vct)
-cdl_vct <- st_remove_holes(cdl_vct)
-plot(cdl_vct)
+cdl_vct <- nngeo::st_remove_holes(cdl_vct)
+tm_shape(cdl_clmp) +
+  tm_polygons("clumps", drop.levels = T, showNA = F, legend.show = F)
+```
 
+```{r}
 # Remove small fields
-cdl_vct2 <- mutate(cdl_vct, area = st_area(cdl_vct)) %>% 
+cdl_vct <- mutate(cdl_vct, area = st_area(cdl_vct)) %>% 
   filter(area > as_units(100000, "m^2"))
 
-# Visualize final product
-ggplot(cdl_vct2, aes(fill = factor(clumps))) +
-  geom_sf() +
-  theme(legend.position = "none")
+tm_shape(cdl_vct) +
+  tm_polygons("clumps", drop.levels = T, showNA = F, legend.show = F)
 
+```
+
+## Write data
+
+```{r}
 # Write data
 write_sf(cdl_vct, "cdl_tmp.gpkg")
-
-st_area(tmp2)
-
-tmp2 <- filter(tmp2, st_area(.))
-st_area(tmp2)
-
-cld_rst@data <- dplyr::left_join(cdl_rst@data, cdl_var, by = c("CDL_2019_17019" = "VALUE")) %>% 
-  dplyr::select(CLASS)
-
-plot(cdl_rst)
-corn ?mask
-tmp <- rasterToPolygons(cdl_rst, fun = function(x) {x == 1}, dissolve = T)
-plot(tmp)
-
-tmp <- mask(cdl_rst, mask = 1)
-?mask
-
-cdl_vat$VALUE[cdl_vat$CLASS_NAME == "Corn"]
-cdl_vat$CLASS_NAME
-
-raster
-str(cdl_rst["CDL_2019_17019"])
-str(cdl_rst)
-tmp <- as.data.frame(cdl_rst$CDL_2019_17019)
-table(tmp$CDL_2019_17019)
-
-
-tmp <- asclass(tmp)
-View(cdl_vat)
-?raster
-?clusterR()
+```
